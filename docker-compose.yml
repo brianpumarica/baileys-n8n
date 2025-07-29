@@ -1,0 +1,11 @@
+services:
+  baileys-api:
+    build: .
+    container_name: baileys-container
+    restart: unless-stopped
+    ports:
+      - "3001:3000"
+    volumes:
+      - ./auth_info_baileys:/usr/src/app/auth_info_baileys
+    dns:
+      - 8.8.8.8
