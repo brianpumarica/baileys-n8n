@@ -6,6 +6,6 @@ services:
     ports:
       - "3001:3000"
     volumes:
-      - ./auth_info_baileys:/usr/src/app/auth_info_baileys
+      - .:/usr/src/app # Sincroniza todo para que la sesión se guarde localmente
     dns:
       - 8.8.8.8
