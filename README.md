@@ -20,7 +20,6 @@ Esta implementación se beneficia de las potentes características de la librer�
 | ------ | --------------- | ------------------------------------ |
 | `POST` | `/send-message` | Envía texto a un número o grupo.     |
 | `GET`  | `/qr-code`      | QR en base64 para autenticar sesión. |
-| `GET`  | `/session`      | Estado de la conexión.               |
 
 (Podés extender `src/index.js` para soportar archivos, stickers, audio, etc.)
 
@@ -123,19 +122,29 @@ Para enviar un mensaje desde un workflow de n8n, usa el nodo **HTTP Request**:
 - **Method**: `POST`
 - **Body Content Type**: `JSON`
 - **Body**:
-  ```json
-  {
-    "number": "5491122334455",
-    "message": "Mensaje desde mi workflow de n8n!"
-  }
-  ```
+
+- Ejemplo 1: Enviar a un número de teléfono
+```json
+{
+  "recipient": "5491122334455",
+  "message": "Mensaje para una persona desde n8n!"
+}
+```
+- Ejemplo 2: Enviar a un grupo de WhatsApp
+```json
+{
+  "recipient": "120363267183690588@g.us",
+  "message": "Mensaje para un grupo desde n8n!"
+}
+```
+¿Cómo obtener el ID de un grupo? La forma más fácil es revisar los logs de la consola de la API. Cuando alguien escriba en un grupo donde está el bot, aparecerá un mensaje como: Nuevo mensaje del GRUPO (ID_DEL_GRUPO): "texto del mensaje". Copia ese ID completo.
 
 **Ejemplo **`curl`**:**
 
 ```bash
 curl -X POST http://localhost:3001/send-message \
-  -H "Content-Type: application/json" \
-  -d '{"number":"5491122334455","message":"Hola desde la API!"}'
+ -H "Content-Type: application/json" \
+ -d '{"recipient":"5491122334455","message":"Hola desde la API!"}'
 ```
 
 ---

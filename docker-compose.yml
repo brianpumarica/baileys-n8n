@@ -1,11 +1,20 @@
+version: '3.8'
+
 services:
   baileys-api:
+    # Construye la imagen usando el Dockerfile en el directorio actual
     build: .
     container_name: baileys-container
     restart: unless-stopped
     ports:
+      # Mapea el puerto 3000 del contenedor al puerto 3001 de tu máquina
       - "3001:3000"
     volumes:
-      - .:/usr/src/app # Sincroniza todo para que la sesión se guarde localmente
+      # Solo mapeamos la carpeta de autenticación.
+      # Docker creará una carpeta 'auth_info_baileys' en tu directorio local
+      # y la mantendrá sincronizada con la del contenedor.
+      # El resto de la aplicación, incluyendo node_modules, queda intacto dentro del contenedor.
+      - ./auth_info_baileys:/usr/src/app/auth_info_baileys
     dns:
+      # Esto es opcional, puedes quitarlo si no tienes problemas de red.
       - 8.8.8.8

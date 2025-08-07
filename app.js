@@ -1,5 +1,5 @@
 // =================================================================
-//                      IMPORTS Y CONFIGURACIÓN INICIAL
+//                              IMPORTS
 // =================================================================
 const makeWASocket = require("@whiskeysockets/baileys").default;
 const {
@@ -9,42 +9,124 @@ const {
 const express = require("express");
 const pino = require("pino");
 const qrcode = require("qrcode");
+
+// Polyfill para la API de Crypto, requerida por Baileys
 const { webcrypto } = require("node:crypto");
 global.crypto = webcrypto;
 
+
+// =================================================================
+//                      CONFIGURACIÓN INICIAL
+// =================================================================
 const app = express();
 app.use(express.json());
 
-// El puerto se obtiene de las variables de entorno, ideal para Railway, con un fallback a 3000 para local.
+// El puerto se obtiene de las variables de entorno, con un fallback a 3000 para local.
 const port = process.env.PORT || 3000;
 
-// --- LÓGICA DE RUTAS PERSISTENTES ---
-// Determina dónde se guardarán los datos de la sesión.
-// Si la variable de entorno PERSISTENT_DATA_PATH existe (en Railway), úsala.
-// Si no, usa '.' (la carpeta actual), ideal para el desarrollo local.
-const persistentDataPath = process.env.PERSISTENT_DATA_PATH || '.';
-const authStatePath = `${persistentDataPath}/auth_info_baileys`;
-console.log(`Guardando datos de sesión en: ${authStatePath}`);
-// --- FIN DE LÓGICA DE RUTAS ---
+// Ruta persistente para guardar la sesión de autenticación.
+const authStatePath = process.env.PERSISTENT_DATA_PATH ? `${process.env.PERSISTENT_DATA_PATH}/auth_info_baileys` : 'auth_info_baileys';
 
 let sock;
 let qrCodeString = null;
 
+
 // =================================================================
-//                      ENDPOINT PARA MOSTRAR EL QR
+//                  LÓGICA PRINCIPAL DEL BOT DE WHATSAPP
 // =================================================================
+
+/**
+ * Inicia la conexión con WhatsApp, configura los listeners de eventos y maneja la reconexión.
+ */
+async function connectToWhatsApp() {
+    const { state, saveCreds } = await useMultiFileAuthState(authStatePath);
+
+    sock = makeWASocket({
+        logger: pino({ level: "silent" }), // 'info' para ver más detalles, 'silent' para producción
+        auth: state,
+        browser: ["N8N-Baileys", "Chrome", "1.0.0"], // Browser personalizado
+        shouldIgnoreJid: jid => typeof jid === 'string' && jid.includes('@broadcast'),// Ignorar listas de difusión
+    });
+
+    // Pasamos saveCreds a la función que configura los listeners
+    setupEventListeners(saveCreds);
+}
+
+/**
+ * Configura todos los listeners de eventos para el socket de Baileys.
+ * @param {Function} saveCreds - La función para guardar las credenciales de autenticación.
+ */
+function setupEventListeners(saveCreds) {
+    // Evento de actualización de la conexión
+    sock.ev.on("connection.update", handleConnectionUpdate);
+
+    // Evento de actualización de credenciales
+    sock.ev.on("creds.update", saveCreds);
+
+    // Evento de recepción de mensajes
+    sock.ev.on("messages.upsert", handleMessagesUpsert);
+}
+
+/**
+ * Maneja las actualizaciones del estado de la conexión (conectado, desconectado, QR).
+ * @param {object} update - El objeto de actualización de la conexión.
+ */
+async function handleConnectionUpdate(update) {
+    const { connection, lastDisconnect, qr } = update;
+
+    if (qr) {
+        qrCodeString = qr;
+        console.log('CÓDIGO QR RECIBIDO. Accede al endpoint /qr para escanear.');
+    }
+
+    if (connection === "close") {
+        const shouldReconnect = lastDisconnect.error?.output?.statusCode !== DisconnectReason.loggedOut;
+        console.log(`Conexión cerrada. Razón: ${lastDisconnect.error?.message}. Reconectando: ${shouldReconnect}`);
+        if (shouldReconnect) {
+            connectToWhatsApp();
+        }
+    } else if (connection === "open") {
+        qrCodeString = null;
+        console.log("¡CONEXIÓN ABIERTA Y EXITOSA! El bot está listo.");
+    }
+}
+
+/**
+ * Procesa los mensajes entrantes para registrar información útil.
+ * @param {object} m - El objeto que contiene los mensajes.
+ */
+async function handleMessagesUpsert(m) {
+    m.messages.forEach(msg => {        
+        if (!msg.message || msg.key.fromMe) {
+            return;
+        }
+
+        const from = msg.key.remoteJid;
+        const messageContent = msg.message.conversation || msg.message.extendedTextMessage?.text || '';
+        const type = from.endsWith('@g.us') ? 'GRUPO' : 'USUARIO';
+
+        console.log(`Nuevo mensaje del ${type} (${from}): "${messageContent}"`);
+    });
+}
+
+
+// =================================================================
+//                         ENDPOINTS DE LA API
+// =================================================================
+
+/**
+ * Endpoint para mostrar el código QR de autenticación.
+ */
 app.get('/qr', async (req, res) => {
     if (qrCodeString) {
         try {
-            // Genera el QR como una imagen en formato DataURL
             const qrDataURL = await qrcode.toDataURL(qrCodeString);
-            // Envía una página HTML simple con la imagen del QR
             res.send(`
                 <body style="display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; background-color: #f0f2f5; font-family: sans-serif;">
-                    <div style="text-align: center; padding: 20px; background-color: white; border-radius: 10px; box-shadow: 0 4px 8px rgba(0,0,0,0.1);">
+                    <div style="text-align: center; padding: 40px; background-color: white; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.1);">
                         <h1>Escanea para conectar tu WhatsApp</h1>
-                        <p>Abre WhatsApp en tu teléfono, ve a Dispositivos Vinculados y escanea el código.</p>
-                        <img src="${qrDataURL}" alt="Código QR de WhatsApp" style="width: 400px; height: 400px; margin-top: 20px;">
+                        <p>Abre WhatsApp, ve a Dispositivos Vinculados y escanea el código.</p>
+                        <img src="${qrDataURL}" alt="Código QR de WhatsApp" style="width: 350px; height: 350px; margin-top: 25px;">
                     </div>
                 </body>
             `);
@@ -53,98 +135,45 @@ app.get('/qr', async (req, res) => {
             res.status(500).send('Error al generar el código QR');
         }
     } else {
-        res.status(404).send('No hay un código QR disponible. Reinicia el proceso de autenticación.');
+        res.status(404).send('El código QR no está disponible. Es posible que ya estés conectado.');
     }
 });
 
-// =================================================================
-//                      FUNCIÓN PRINCIPAL DE CONEXIÓN
-// =================================================================
-async function connectToWhatsApp() {
-    // Usa la ruta de autenticación dinámica
-    const { state, saveCreds } = await useMultiFileAuthState(authStatePath);
-
-    sock = makeWASocket({
-        logger: pino({ level: "info" }), // Nivel de log 'info' para producción
-        auth: state,
-        browser: ["Chrome", "Desktop", "122.0.0"],
-        // Requerido para evitar problemas con ciertas JIDs en producción
-        shouldIgnoreJid: jid => jid.includes('@broadcast'), 
-    });
-
-    // Listener para los eventos de conexión
-    sock.ev.on("connection.update", async (update) => {
-        const { connection, lastDisconnect, qr } = update;
-
-        if (qr) {
-            qrCodeString = qr;
-            console.log('CÓDIGO QR RECIBIDO. Accede al endpoint /qr para escanear.');
-        }
-
-        if (connection === "close") {
-            const shouldReconnect =
-                lastDisconnect.error?.output?.statusCode !== DisconnectReason.loggedOut;
-            console.log(
-                "Conexión cerrada debido a ",
-                lastDisconnect.error,
-                ", reconectando: ",
-                shouldReconnect
-            );
-            // Lógica de reconexión robusta para producción
-            if (shouldReconnect) {
-                connectToWhatsApp();
-            }
-        } else if (connection === "open") {
-            qrCodeString = null; // Limpiamos el QR una vez que la conexión es exitosa
-            console.log("¡CONEXIÓN ABIERTA Y EXITOSA! EL BOT ESTÁ LISTO.");
-        }
-    });
-
-    // Listener para guardar las credenciales actualizadas
-    sock.ev.on("creds.update", saveCreds);
-}
-
-// =================================================================
-//                      ENDPOINT PARA ENVIAR MENSAJES
-// =================================================================
+/**
+ * Endpoint para enviar un mensaje a un usuario o grupo.
+ */
 app.post("/send-message", async (req, res) => {
-    const { number, message } = req.body;
+    const { recipient, message } = req.body;
 
-    // Validación de la conexión del socket
     if (!sock || !sock.user) {
-        return res
-            .status(500)
-            .json({ status: "error", message: "El cliente de WhatsApp no está conectado o listo." });
+        return res.status(500).json({ status: "error", message: "El cliente de WhatsApp no está conectado." });
     }
-
-    // Validación de los parámetros de entrada
-    if (!number || !message) {
-        return res
-            .status(400)
-            .json({ status: "error", message: "El número y el mensaje son requeridos." });
+    if (!recipient || !message) {
+        return res.status(400).json({ status: "error", message: "Los campos 'recipient' y 'message' son requeridos." });
     }
 
     try {
-        // Formatea el JID (identificador de WhatsApp) correctamente
-        const jid = number.includes("@s.whatsapp.net")
-            ? number
-            : `${number}@s.whatsapp.net`;
-        
-        // Envía el mensaje
+        const jid = recipient.endsWith('@g.us')
+            ? recipient
+            : `${recipient.replace(/\D/g, '')}@s.whatsapp.net`;
+
+        console.log(`Intentando enviar mensaje a JID: ${jid}`);
         await sock.sendMessage(jid, { text: message });
         
-        res.status(200).json({ status: "success", message: "Mensaje enviado." });
+        res.status(200).json({ status: "success", message: `Mensaje enviado a ${jid}` });
     } catch (error) {
-        console.error("Error en /send-message:", error);
-        res.status(500).json({ status: "error", message: "Error al enviar el mensaje." });
+        console.error("Error detallado en /send-message:", error);
+        res.status(500).json({ status: "error", message: "Error interno al enviar el mensaje.", details: error.message });
     }
 });
 
+
 // =================================================================
-//                      INICIO DEL SERVIDOR
+//                       INICIO DEL SERVIDOR
 // =================================================================
 app.listen(port, () => {
     console.log(`Servidor escuchando en el puerto ${port}`);
-    console.log('Cuando necesites autenticar, el QR estará disponible en el endpoint /qr');
+    console.log(`Ruta de sesión: ${authStatePath}`);
+    console.log('Iniciando conexión con WhatsApp...');
     connectToWhatsApp();
 });
